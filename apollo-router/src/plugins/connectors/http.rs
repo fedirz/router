@@ -1,6 +1,5 @@
 //! HTTP-based connector implementation types.
 
-use http::Uri;
 use hyper::body::HttpBody;
 
 use crate::plugins::connectors::error::Error as ConnectorError;
@@ -29,7 +28,7 @@ impl<T: HttpBody> From<ConnectorError> for Result<T> {
 
 /// The result of a connector and the associated response key
 pub(crate) struct Response<T: HttpBody> {
-    pub(crate) url: Option<Uri>,
+    pub(crate) snapshot_key: Option<String>,
     pub(crate) result: Result<T>,
     pub(crate) key: ResponseKey,
 }

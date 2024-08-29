@@ -24,12 +24,14 @@ use crate::plugins::connectors::handle_responses::handle_responses;
 use crate::plugins::connectors::http::Response as ConnectorResponse;
 use crate::plugins::connectors::http::Result as ConnectorResult;
 use crate::plugins::connectors::make_requests::make_requests;
+use crate::plugins::connectors::make_requests::RequestInfo;
 use crate::plugins::connectors::plugin::ConnectorContext;
 use crate::plugins::connectors::plugin::SnapshotConfig;
 use crate::plugins::connectors::request_limit::RequestLimits;
 use crate::plugins::connectors::tracing::CONNECTOR_TYPE_HTTP;
 use crate::plugins::connectors::tracing::CONNECT_SPAN_NAME;
 use crate::plugins::subscription::SubscriptionConfig;
+use crate::services::connector_service::snapshot::create_snapshot_key;
 use crate::services::connector_service::snapshot::Snapshot;
 use crate::services::ConnectRequest;
 use crate::services::ConnectResponse;
@@ -149,66 +151,79 @@ async fn execute(
         (debug, request_limit, snapshot_config)
     });
 
-    let requests = make_requests(request, connector, &debug).map_err(BoxError::from)?;
+    let hash_body = snapshot_config
+        .as_ref()
+        .map(|config| config.enabled)
+        .unwrap_or(false);
+    let requests = make_requests(request, connector, &debug, hash_body).map_err(BoxError::from)?;
 
     let snapshot_config_cloned = snapshot_config.clone();
-    let tasks = requests.into_iter().map(move |(req, key)| {
-        // Returning an error from this closure causes all tasks to be cancelled and the operation
-        // to fail. This is the reason for the Result-wrapped-in-a-Result here. An `Err` on the
-        // inner result fails just that one task, but an `Err` on the outer result cancels all the
-        // tasks and fails the whole operation.
-        let context = context.clone();
-        let original_subgraph_name = original_subgraph_name.clone();
-        let request_limit = request_limit.clone();
-        let snapshot_config = snapshot_config.clone();
-        async move {
-            if let Some(request_limit) = request_limit {
-                if !request_limit.allow() {
-                    return Ok(ConnectorResponse {
-                        url: Some(req.uri().clone()),
-                        result: ConnectorResult::Err(ConnectorError::RequestLimitExceeded),
-                        key,
-                    });
-                }
-            }
-
-            let url = req.uri().clone();
-
-            if let Some(snapshot_config) = snapshot_config {
-                if snapshot_config.enabled && !snapshot_config.update {
-                    let snapshot_path = PathBuf::from(&snapshot_config.path);
-                    if let Some(snapshot) = Snapshot::load(snapshot_path, &url.to_string()) {
-                        if let Ok(http_response) = snapshot.try_into() {
-                            return Ok(ConnectorResponse {
-                                url: Some(url.clone()),
-                                result: http_response,
-                                key,
-                            });
-                        }
-                    } else if snapshot_config.offline {
+    let tasks = requests.into_iter().map(
+        move |RequestInfo {
+                  request: req,
+                  body_hash,
+                  response_key: key,
+              }| {
+            // Returning an error from this closure causes all tasks to be cancelled and the operation
+            // to fail. This is the reason for the Result-wrapped-in-a-Result here. An `Err` on the
+            // inner result fails just that one task, but an `Err` on the outer result cancels all the
+            // tasks and fails the whole operation.
+            let context = context.clone();
+            let original_subgraph_name = original_subgraph_name.clone();
+            let request_limit = request_limit.clone();
+            let snapshot_config = snapshot_config.clone();
+            async move {
+                if let Some(request_limit) = request_limit {
+                    if !request_limit.allow() {
                         return Ok(ConnectorResponse {
-                            url: Some(url.clone()),
-                            result: ConnectorResult::Err(ConnectorError::SnapshotNotFound),
+                            snapshot_key: None,
+                            result: ConnectorResult::Err(ConnectorError::RequestLimitExceeded),
                             key,
                         });
                     }
                 }
+
+                let mut snapshot_key = None;
+                if let Some(snapshot_config) = snapshot_config {
+                    if snapshot_config.enabled && !snapshot_config.update {
+                        let snapshot_path = PathBuf::from(&snapshot_config.path);
+                        let snapshot_key_value = create_snapshot_key(&req, body_hash).await;
+                        snapshot_key = Some(snapshot_key_value.clone());
+                        if let Some(snapshot) =
+                            Snapshot::load(snapshot_path, snapshot_key_value.as_str())
+                        {
+                            if let Ok(http_response) = snapshot.try_into() {
+                                return Ok(ConnectorResponse {
+                                    snapshot_key,
+                                    result: http_response,
+                                    key,
+                                });
+                            }
+                        } else if snapshot_config.offline {
+                            return Ok(ConnectorResponse {
+                                snapshot_key,
+                                result: ConnectorResult::Err(ConnectorError::SnapshotNotFound),
+                                key,
+                            });
+                        }
+                    }
+                }
+
+                let client = http_client_factory.create(&original_subgraph_name);
+                let req = HttpRequest {
+                    http_request: req,
+                    context,
+                };
+                let res = client.oneshot(req).await?;
+
+                Ok::<_, BoxError>(ConnectorResponse {
+                    snapshot_key,
+                    result: ConnectorResult::HttpResponse(res.http_response),
+                    key,
+                })
             }
-
-            let client = http_client_factory.create(&original_subgraph_name);
-            let req = HttpRequest {
-                http_request: req,
-                context,
-            };
-            let res = client.oneshot(req).await?;
-
-            Ok::<_, BoxError>(ConnectorResponse {
-                url: Some(url.clone()),
-                result: ConnectorResult::HttpResponse(res.http_response),
-                key,
-            })
-        }
-    });
+        },
+    );
 
     let responses = futures::future::try_join_all(tasks)
         .await

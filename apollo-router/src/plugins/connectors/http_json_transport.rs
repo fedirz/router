@@ -28,6 +28,8 @@ use serde_json_bytes::json;
 use serde_json_bytes::ByteString;
 use serde_json_bytes::Map;
 use serde_json_bytes::Value;
+use sha2::Digest;
+use sha2::Sha256;
 use thiserror::Error;
 use url::Url;
 
@@ -69,7 +71,8 @@ pub(crate) fn make_request(
     inputs: IndexMap<String, Value>,
     original_request: &connect::Request,
     debug: &Option<Arc<Mutex<ConnectorContext>>>,
-) -> Result<http::Request<RouterBody>, HttpJsonTransportError> {
+    hash_body: bool,
+) -> Result<(http::Request<RouterBody>, Option<String>), HttpJsonTransportError> {
     let flat_inputs = flatten_keys(&inputs);
     let uri = make_uri(
         transport.source_url.as_ref(),
@@ -117,6 +120,21 @@ pub(crate) fn make_request(
         .body(body.into())
         .map_err(HttpJsonTransportError::InvalidNewRequest)?;
 
+    let body_hash = if hash_body && (json_body.is_some() || form_body.is_some()) {
+        let mut hasher = Sha256::new();
+        if let Some(ref json_body) = json_body {
+            if let Ok(s) = serde_json::to_vec(json_body) {
+                hasher.update(s);
+            }
+        }
+        if let Some(ref form_body) = form_body {
+            hasher.update(form_body.as_bytes());
+        }
+        Some(hex::encode(hasher.finalize().as_slice()))
+    } else {
+        None
+    };
+
     if let Some(debug) = debug {
         if is_form_urlencoded {
             debug.lock().push_request(
@@ -147,7 +165,7 @@ pub(crate) fn make_request(
         }
     }
 
-    Ok(request)
+    Ok((request, body_hash))
 }
 
 fn make_uri(

@@ -53,7 +53,7 @@ pub(crate) async fn handle_responses<T: HttpBody>(
     for response in responses {
         let mut error = None;
         let response_key = response.key;
-        let url = response.url;
+        let snapshot_key = response.snapshot_key;
         match response.result {
             ConnectorResult::Err(e) => {
                 error = Some(e.to_graphql_error(connector, None));
@@ -74,13 +74,13 @@ pub(crate) async fn handle_responses<T: HttpBody>(
 
                     if let Some(snapshot_config) = snapshot_config {
                         if snapshot_config.enabled {
-                            if let Some(url) = url {
+                            if let Some(snapshot_key) = snapshot_key {
                                 let snapshot_path = PathBuf::from(&snapshot_config.path);
                                 if let Err(e) =
-                                    Snapshot::new(&url.to_string(), &json_data, &parts.headers)
+                                    Snapshot::new(&snapshot_key, &json_data, &parts.headers)
                                         .save(snapshot_path)
                                 {
-                                    warn!("Failed to save snapshot for {} - {:?}", url, e);
+                                    warn!("Failed to save snapshot for {} - {:?}", snapshot_key, e);
                                 }
                             }
                         }
@@ -321,12 +321,12 @@ mod tests {
         let res = super::handle_responses(
             vec![
                 ConnectorResponse {
-                    url: None,
+                    snapshot_key: None,
                     result: response1.into(),
                     key: response_key1,
                 },
                 ConnectorResponse {
-                    url: None,
+                    snapshot_key: None,
                     result: response2.into(),
                     key: response_key2,
                 },
@@ -424,12 +424,12 @@ mod tests {
         let res = super::handle_responses(
             vec![
                 ConnectorResponse {
-                    url: None,
+                    snapshot_key: None,
                     result: response1.into(),
                     key: response_key1,
                 },
                 ConnectorResponse {
-                    url: None,
+                    snapshot_key: None,
                     result: response2.into(),
                     key: response_key2,
                 },
@@ -541,12 +541,12 @@ mod tests {
         let res = super::handle_responses(
             vec![
                 ConnectorResponse {
-                    url: None,
+                    snapshot_key: None,
                     result: response1.into(),
                     key: response_key1,
                 },
                 ConnectorResponse {
-                    url: None,
+                    snapshot_key: None,
                     result: response2.into(),
                     key: response_key2,
                 },
@@ -668,17 +668,17 @@ mod tests {
         let res = super::handle_responses(
             vec![
                 ConnectorResponse {
-                    url: None,
+                    snapshot_key: None,
                     result: response1.into(),
                     key: response_key1,
                 },
                 ConnectorResponse {
-                    url: None,
+                    snapshot_key: None,
                     result: response2.into(),
                     key: response_key2,
                 },
                 ConnectorResponse {
-                    url: None,
+                    snapshot_key: None,
                     result: response3.into(),
                     key: response_key3,
                 },

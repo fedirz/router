@@ -89,18 +89,26 @@ pub(crate) enum ResponseTypeName {
     Omitted,
 }
 
+#[derive(Debug)]
+pub(crate) struct RequestInfo {
+    pub(crate) request: http::Request<RouterBody>,
+    pub(crate) body_hash: Option<String>,
+    pub(crate) response_key: ResponseKey,
+}
+
 pub(crate) fn make_requests(
     request: connect::Request,
     connector: &Connector,
     debug: &Option<Arc<Mutex<ConnectorContext>>>,
-) -> Result<Vec<(http::Request<RouterBody>, ResponseKey)>, MakeRequestError> {
+    hash_body: bool,
+) -> Result<Vec<RequestInfo>, MakeRequestError> {
     let request_params = match connector.entity_resolver {
         Some(EntityResolver::Explicit) => entities_from_request(connector, &request),
         Some(EntityResolver::Implicit) => entities_with_fields_from_request(connector, &request),
         None => root_fields(connector, &request),
     }?;
 
-    request_params_to_requests(connector, request_params, &request, debug)
+    request_params_to_requests(connector, request_params, &request, debug, hash_body)
 }
 
 fn request_params_to_requests(
@@ -108,18 +116,24 @@ fn request_params_to_requests(
     request_params: Vec<ResponseKey>,
     original_request: &connect::Request,
     debug: &Option<Arc<Mutex<ConnectorContext>>>,
-) -> Result<Vec<(http::Request<RouterBody>, ResponseKey)>, MakeRequestError> {
+    hash_body: bool,
+) -> Result<Vec<RequestInfo>, MakeRequestError> {
     let mut results = vec![];
 
     for response_key in request_params {
-        let request = make_request(
+        let (request, body_hash) = make_request(
             &connector.transport,
             response_key.inputs().merge(connector.config.as_ref()),
             original_request,
             debug,
+            hash_body,
         )?;
 
-        results.push((request, response_key));
+        results.push(RequestInfo {
+            request,
+            body_hash,
+            response_key,
+        });
     }
 
     Ok(results)
@@ -1677,12 +1691,12 @@ mod tests {
             max_requests: None,
         };
 
-        let requests = super::make_requests(req, &connector, &None).unwrap();
+        let requests = super::make_requests(req, &connector, &None, false).unwrap();
 
         assert_debug_snapshot!(requests, @r###"
         [
-            (
-                Request {
+            RequestInfo {
+                request: Request {
                     method: GET,
                     uri: http://localhost/api/path,
                     version: HTTP/1.1,
@@ -1691,7 +1705,8 @@ mod tests {
                         Empty,
                     ),
                 },
-                RootField {
+                body_hash: None,
+                response_key: RootField {
                     name: "a",
                     typename: Concrete(
                         "String",
@@ -1711,7 +1726,7 @@ mod tests {
                         this: {},
                     },
                 },
-            ),
+            },
         ]
         "###);
     }
