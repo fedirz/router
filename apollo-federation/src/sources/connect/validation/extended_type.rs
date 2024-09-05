@@ -18,9 +18,8 @@ use super::coordinates::connect_directive_coordinate;
 use super::coordinates::connect_directive_url_coordinate;
 use super::coordinates::HTTPCoordinate;
 use super::entity::validate_entity_arg;
-use super::http_headers::get_http_headers_arg;
-use super::http_headers::validate_headers_arg;
-use super::http_method::validate_http_method_arg;
+use super::http::headers;
+use super::http::method;
 use super::parse_url;
 use super::selection::validate_body_selection;
 use super::selection::validate_selection;
@@ -227,7 +226,7 @@ fn validate_field(
         return errors;
     };
 
-    let http_method = match validate_http_method_arg(
+    let http_method = match method::validate(
         http_arg,
         HTTPCoordinate {
             connect_directive_name,
@@ -312,16 +311,17 @@ fn validate_field(
         }
     }
 
-    if let Some(headers) = get_http_headers_arg(http_arg) {
-        errors.extend(validate_headers_arg(
+    errors.extend(
+        headers::validate_arg(
+            http_arg,
             connect_directive_name,
-            headers,
             source_map,
             Some(&object.name),
             Some(&field.name),
-        ));
-    }
-
+        )
+        .into_iter()
+        .flatten(),
+    );
     errors
 }
 
